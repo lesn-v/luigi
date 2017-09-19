@@ -63,6 +63,9 @@ EVENTUAL_CONSISTENCY_SLEEP_INTERVAL = 0.1
 # Maximum number of sleeps for eventual consistency.
 EVENTUAL_CONSISTENCY_MAX_SLEEPS = 300
 
+# Default maximum number of files to delete per batch request
+DEFAULT_MAX_FILES_TO_DELETE = 10000
+
 
 def _wait_for_consistency(checker):
     """Eventual consistency: wait until GCS reports something is true.
@@ -213,7 +216,15 @@ class GCSClient(luigi.target.FileSystem):
         lst = next(iter(resp.get('items', [])), None)
         return bool(lst)
 
-    def remove(self, path, recursive=True):
+    def remove(self, path, recursive=True,
+               max_files_per_batch=DEFAULT_MAX_FILES_TO_DELETE):
+        """
+        Args:
+            path
+            recursive
+            max_files_per_batch: limit on number of files to be deleted
+                per batch request
+        """
         (bucket, obj) = self._path_to_bucket_and_key(path)
 
         if self._is_root(obj):
@@ -230,9 +241,14 @@ class GCSClient(luigi.target.FileSystem):
                 raise InvalidDeleteException(
                     'Path {} is a directory. Must use recursive delete'.format(path))
 
+            files_counter = 1
             req = http.BatchHttpRequest()
             for it in self._list_iter(bucket, self._add_path_delimiter(obj)):
+                if files_counter % max_files_per_batch == 0:
+                    req.execute()
+                    req = http.BatchHttpRequest()
                 req.add(self.client.objects().delete(bucket=bucket, object=it['name']))
+                files_counter += 1
             req.execute()
 
             _wait_for_consistency(lambda: not self.isdir(path))
